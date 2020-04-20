@@ -21,6 +21,10 @@ import (
 )
 
 const (
+	// Reversed IDs are at the end of the 16-bits range to ease any future
+	// extension of the normal ID range.
+	HostEndpointID = ^uint16(0)
+
 	minID = idpool.ID(1)
 	maxID = idpool.ID(4095)
 )
@@ -51,6 +55,11 @@ func Allocate() uint16 {
 func Reuse(id uint16) error {
 	if idpool.ID(id) < minID {
 		return fmt.Errorf("unable to reuse endpoint: %d < %d", id, minID)
+	}
+
+	// This is a reserved endpoint ID.
+	if id == HostEndpointID {
+		return nil
 	}
 
 	// When restoring endpoints, the existing endpoint ID can be outside of

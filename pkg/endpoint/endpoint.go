@@ -34,7 +34,9 @@ import (
 	"github.com/cilium/cilium/pkg/bpf"
 	"github.com/cilium/cilium/pkg/completion"
 	"github.com/cilium/cilium/pkg/controller"
+	"github.com/cilium/cilium/pkg/datapath/link"
 	"github.com/cilium/cilium/pkg/endpoint/regeneration"
+	"github.com/cilium/cilium/pkg/endpointmanager/idallocator"
 	"github.com/cilium/cilium/pkg/eventqueue"
 	"github.com/cilium/cilium/pkg/fqdn"
 	"github.com/cilium/cilium/pkg/identity"
@@ -196,7 +198,7 @@ type Endpoint struct {
 	// confirm that no existing connection is using them.
 	DNSZombies *fqdn.DNSZombieMappings
 
-	// dnsHistoryTrigger is the trigger to write down the lxc_config.h to make
+	// dnsHistoryTrigger is the trigger to write down the ep_config.h to make
 	// sure that restores when DNS policy is in there are correct
 	dnsHistoryTrigger *trigger.Trigger
 
@@ -334,6 +336,10 @@ func (e *Endpoint) LXCMac() mac.MAC {
 	return e.mac
 }
 
+func (e *Endpoint) IsHost() bool {
+	return e.ID == idallocator.HostEndpointID
+}
+
 // closeBPFProgramChannel closes the channel that signals whether the endpoint
 // has had its BPF program compiled. If the channel is already closed, this is
 // a no-op.
@@ -441,6 +447,29 @@ func createEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator cac
 	ep.SetDefaultOpts(option.Config.Opts)
 
 	return ep
+}
+
+// CreateHostEndpoint creates the endpoint corresponding to the host.
+func CreateHostEndpoint(owner regeneration.Owner, proxy EndpointProxy, allocator cache.IdentityAllocator) (*Endpoint, error) {
+	ifName := option.Config.HostDevice
+	if option.Config.IsFlannelMasterDeviceSet() {
+		ifName = option.Config.FlannelMasterDevice
+	}
+
+	mac, err := link.GetHardwareAddr(ifName)
+	if err != nil {
+		return nil, err
+	}
+
+	ep := createEndpoint(owner, proxy, allocator, idallocator.HostEndpointID, ifName)
+	ep.nodeMAC = mac
+	ep.DatapathConfiguration = models.EndpointDatapathConfiguration{
+		RequireEgressProg: true,
+	}
+
+	ep.setState(StateWaitingForIdentity, "Endpoint creation")
+
+	return ep, nil
 }
 
 // GetID returns the endpoint's ID as a 64-bit unsigned integer.
@@ -2033,7 +2062,7 @@ func (e *Endpoint) syncEndpointHeaderFile(reasons []string) {
 }
 
 // SyncEndpointHeaderFile it bumps the current DNS History information for the
-// endpoint in the lxc_config.h file.
+// endpoint in the ep_config.h file.
 func (e *Endpoint) SyncEndpointHeaderFile() error {
 	if err := e.lockAlive(); err != nil {
 		// endpoint was removed in the meanwhile, return
