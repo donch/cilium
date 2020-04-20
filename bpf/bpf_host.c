@@ -35,7 +35,7 @@
 #include "lib/lb.h"
 #include "lib/nodeport.h"
 
-#if defined(FROM_HOST) && (defined(ENABLE_IPV4) || defined(ENABLE_IPV6))
+#if defined(ENABLE_IPV4) || defined(ENABLE_IPV6)
 static __always_inline int rewrite_dmac_to_host(struct __ctx_buff *ctx,
 						__u32 src_identity)
 {
@@ -54,7 +54,6 @@ static __always_inline int rewrite_dmac_to_host(struct __ctx_buff *ctx,
 #endif
 
 #ifdef ENABLE_IPV6
-#ifndef FROM_HOST
 static __always_inline __u32
 derive_src_id(const union v6addr *node_ip, struct ipv6hdr *ip6, __u32 *identity)
 {
@@ -71,25 +70,24 @@ derive_src_id(const union v6addr *node_ip, struct ipv6hdr *ip6, __u32 *identity)
 	}
 	return 0;
 }
-#endif
 
 static __always_inline __u32
 resolve_srcid_ipv6(struct __ctx_buff *ctx, struct ipv6hdr *ip6,
-	       __u32 srcid_from_proxy)
+		   __u32 srcid_from_proxy, bool from_host)
 {
 	__u32 src_id = WORLD_ID, srcid_from_ipcache = srcid_from_proxy;
 	struct remote_endpoint_info *info = NULL;
 	union v6addr *src;
-
-#ifndef FROM_HOST
-	union v6addr node_ip = {};
 	int ret;
 
-	BPF_V6(node_ip, ROUTER_IP);
-	ret = derive_src_id(&node_ip, ip6, &src_id);
-	if (IS_ERR(ret))
-		return ret;
-#endif
+	if (from_host) {
+		union v6addr node_ip = {};
+
+		BPF_V6(node_ip, ROUTER_IP);
+		ret = derive_src_id(&node_ip, ip6, &src_id);
+		if (IS_ERR(ret))
+			return ret;
+	}
 
 	/* Packets from the proxy will already have a real identity. */
 	if (identity_is_reserved(srcid_from_ipcache)) {
@@ -101,14 +99,14 @@ resolve_srcid_ipv6(struct __ctx_buff *ctx, struct ipv6hdr *ip6,
 			   ((__u32 *) src)[3], srcid_from_ipcache);
 	}
 
-#ifdef FROM_HOST
-	src_id = srcid_from_ipcache;
-#elif ENABLE_SECCTX_FROM_IPCACHE
+	if (from_host)
+		src_id = srcid_from_ipcache;
+#ifdef ENABLE_SECCTX_FROM_IPCACHE
 	/* If we could not derive the secctx from the packet itself but
 	 * from the ipcache instead, then use the ipcache identity. E.g.
 	 * used in ipvlan master device's datapath on ingress.
 	 */
-	if (src_id == WORLD_ID && !identity_is_reserved(srcid_from_ipcache))
+	else if (src_id == WORLD_ID && !identity_is_reserved(srcid_from_ipcache))
 		src_id = srcid_from_ipcache;
 #endif
 
@@ -116,7 +114,7 @@ resolve_srcid_ipv6(struct __ctx_buff *ctx, struct ipv6hdr *ip6,
 }
 
 static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
-				       __u32 srcid_from_proxy)
+				       __u32 srcid_from_proxy, bool from_host)
 {
 	struct remote_endpoint_info *info = NULL;
 	void *data, *data_end;
@@ -131,20 +129,21 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 		return DROP_INVALID;
 
 #ifdef ENABLE_NODEPORT
-	if (ctx_get_xfer(ctx) != XFER_PKT_NO_SVC) {
-		if (!bpf_skip_nodeport(ctx)) {
+	if (!from_host) {
+		if (ctx_get_xfer(ctx) != XFER_PKT_NO_SVC &&
+		    !bpf_skip_nodeport(ctx)) {
 			ret = nodeport_lb6(ctx, srcid_from_proxy);
 			if (ret < 0)
 				return ret;
 		}
-	}
 #if defined(ENCAP_IFINDEX) || defined(NO_REDIRECT)
-	/* See IPv4 case for NO_REDIRECT comments */
-	return CTX_ACT_OK;
+		/* See IPv4 case for NO_REDIRECT comments */
+		return CTX_ACT_OK;
 #endif /* ENCAP_IFINDEX || NO_REDIRECT */
-	/* Verifier workaround: modified ctx access. */
-	if (!revalidate_data(ctx, &data, &data_end, &ip6))
-		return DROP_INVALID;
+		/* Verifier workaround: modified ctx access. */
+		if (!revalidate_data(ctx, &data, &data_end, &ip6))
+			return DROP_INVALID;
+	}
 #endif /* ENABLE_NODEPORT */
 
 	nexthdr = ip6->nexthdr;
@@ -160,21 +159,19 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 	}
 #endif
 
-	secctx = resolve_srcid_ipv6(ctx, ip6, srcid_from_proxy);
+	secctx = resolve_srcid_ipv6(ctx, ip6, srcid_from_proxy, from_host);
 
-#ifdef FROM_HOST
-	if (1) {
+	if (from_host) {
 		/* If we are attached to cilium_host at egress, this will
 		 * rewrite the destination mac address to the MAC of cilium_net */
 		ret = rewrite_dmac_to_host(ctx, secctx);
 		/* DIRECT PACKET READ INVALID */
 		if (IS_ERR(ret))
 			return ret;
-	}
 
-	if (!revalidate_data(ctx, &data, &data_end, &ip6))
-		return DROP_INVALID;
-#endif
+		if (!revalidate_data(ctx, &data, &data_end, &ip6))
+			return DROP_INVALID;
+	}
 
 	/* Lookup IPv4 address in list of local endpoints */
 	if ((ep = lookup_ip6_endpoint(ip6)) != NULL) {
@@ -223,12 +220,10 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 
 	dst = (union v6addr *) &ip6->daddr;
 	info = ipcache_lookup6(&IPCACHE_MAP, dst, V6_CACHE_KEY_LEN);
-#ifdef FROM_HOST
-	if (info == NULL || info->sec_label == WORLD_ID) {
+	if (from_host && (info == NULL || info->sec_label == WORLD_ID)) {
 		/* See IPv4 comment. */
 		return DROP_UNROUTABLE;
 	}
-#endif
 #ifdef ENABLE_IPSEC
 	if (info && info->key && info->tunnel_endpoint) {
 		__u8 key = get_min_encrypt_key(info->key);
@@ -244,26 +239,38 @@ static __always_inline int handle_ipv6(struct __ctx_buff *ctx,
 	return CTX_ACT_OK;
 }
 
-__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV6_FROM_LXC)
-int tail_handle_ipv6(struct __ctx_buff *ctx)
+static __always_inline int
+tail_handle_ipv6(struct __ctx_buff *ctx, bool from_host)
 {
 	__u32 proxy_identity = ctx_load_meta(ctx, CB_SRC_IDENTITY);
 	int ret;
 
 	ctx_store_meta(ctx, CB_SRC_IDENTITY, 0);
 
-	ret = handle_ipv6(ctx, proxy_identity);
+	ret = handle_ipv6(ctx, proxy_identity, from_host);
 	if (IS_ERR(ret))
 		return send_drop_notify_error(ctx, proxy_identity, ret,
 					      CTX_ACT_DROP, METRIC_INGRESS);
 	return ret;
+}
+
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV6_FROM_HOST)
+int tail_handle_ipv6_from_host(struct __ctx_buff *ctx __maybe_unused)
+{
+	return tail_handle_ipv6(ctx, true);
+}
+
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV6_FROM_LXC)
+int tail_handle_ipv6_from_netdev(struct __ctx_buff *ctx)
+{
+	return tail_handle_ipv6(ctx, false);
 }
 #endif /* ENABLE_IPV6 */
 
 #ifdef ENABLE_IPV4
 static __always_inline __u32
 resolve_srcid_ipv4(struct __ctx_buff *ctx, const struct iphdr *ip4,
-		   __u32 srcid_from_proxy)
+		   __u32 srcid_from_proxy, bool from_host)
 {
 	__u32 src_id = WORLD_ID, srcid_from_ipcache = srcid_from_proxy;
 	struct remote_endpoint_info *info = NULL;
@@ -293,14 +300,14 @@ resolve_srcid_ipv4(struct __ctx_buff *ctx, const struct iphdr *ip4,
 			   ip4->saddr, srcid_from_ipcache);
 	}
 
-#ifdef FROM_HOST
-	src_id = srcid_from_ipcache;
-#elif ENABLE_SECCTX_FROM_IPCACHE
+	if (from_host)
+		src_id = srcid_from_ipcache;
+#ifdef ENABLE_SECCTX_FROM_IPCACHE
 	/* If we could not derive the secctx from the packet itself but
 	 * from the ipcache instead, then use the ipcache identity. E.g.
 	 * used in ipvlan master device's datapath on ingress.
 	 */
-	if (!identity_is_reserved(srcid_from_ipcache))
+	else if (!identity_is_reserved(srcid_from_ipcache))
 		src_id = srcid_from_ipcache;
 #endif
 
@@ -308,7 +315,7 @@ resolve_srcid_ipv4(struct __ctx_buff *ctx, const struct iphdr *ip4,
 }
 
 static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
-				       __u32 srcid_from_proxy)
+				       __u32 srcid_from_proxy, bool from_host)
 {
 	struct remote_endpoint_info *info = NULL;
 	struct ipv4_ct_tuple tuple = {};
@@ -321,32 +328,32 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 		return DROP_INVALID;
 
 #ifdef ENABLE_NODEPORT
-	if (ctx_get_xfer(ctx) != XFER_PKT_NO_SVC) {
-		if (!bpf_skip_nodeport(ctx)) {
+	if (!from_host) {
+		if (ctx_get_xfer(ctx) != XFER_PKT_NO_SVC &&
+		    !bpf_skip_nodeport(ctx)) {
 			int ret = nodeport_lb4(ctx, srcid_from_proxy);
 			if (ret < 0)
 				return ret;
 		}
-	}
 #if defined(ENCAP_IFINDEX) || defined(NO_REDIRECT)
-	/* We cannot redirect a packet to a local endpoint in the direct
-	 * routing mode, as the redirect bypasses nf_conntrack table.
-	 * This makes a second reply from the endpoint to be MASQUERADEd or
-	 * to be DROPed by k8s's "--ctstate INVALID -j DROP" depending via
-	 * which interface it was inputed. */
-	return CTX_ACT_OK;
+		/* We cannot redirect a packet to a local endpoint in the direct
+		 * routing mode, as the redirect bypasses nf_conntrack table.
+		 * This makes a second reply from the endpoint to be MASQUERADEd
+		 * or to be DROPed by k8s's "--ctstate INVALID -j DROP"
+		 * depending via which interface it was inputed. */
+		return CTX_ACT_OK;
 #endif /* ENCAP_IFINDEX || NO_REDIRECT */
-	/* Verifier workaround: modified ctx access. */
-	if (!revalidate_data(ctx, &data, &data_end, &ip4))
-		return DROP_INVALID;
+		/* Verifier workaround: modified ctx access. */
+		if (!revalidate_data(ctx, &data, &data_end, &ip4))
+			return DROP_INVALID;
+	}
 #endif /* ENABLE_NODEPORT */
 
 	tuple.nexthdr = ip4->protocol;
 
-	secctx = resolve_srcid_ipv4(ctx, ip4, srcid_from_proxy);
+	secctx = resolve_srcid_ipv4(ctx, ip4, srcid_from_proxy, from_host);
 
-#ifdef FROM_HOST
-	if (1) {
+	if (from_host) {
 		int ret;
 
 		/* If we are attached to cilium_host at egress, this will
@@ -355,11 +362,10 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 		/* DIRECT PACKET READ INVALID */
 		if (IS_ERR(ret))
 			return ret;
-	}
 
-	if (!revalidate_data(ctx, &data, &data_end, &ip4))
-		return DROP_INVALID;
-#endif
+		if (!revalidate_data(ctx, &data, &data_end, &ip4))
+			return DROP_INVALID;
+	}
 
 	/* Lookup IPv4 address in list of local endpoints and host IPs */
 	if ((ep = lookup_ip4_endpoint(ip4)) != NULL) {
@@ -409,8 +415,7 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 #else
 
 	info = ipcache_lookup4(&IPCACHE_MAP, ip4->daddr, V4_CACHE_KEY_LEN);
-#ifdef FROM_HOST
-	if (info == NULL || info->sec_label == WORLD_ID) {
+	if (from_host && (info == NULL || info->sec_label == WORLD_ID)) {
 		/* We have received a packet for which no ipcache entry exists,
 		 * we do not know what to do with this packet, drop it.
 		 *
@@ -422,7 +427,6 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 		 */
 		return DROP_UNROUTABLE;
 	}
-#endif
 #ifdef ENABLE_IPSEC
 	if (info && info->key && info->tunnel_endpoint) {
 		__u8 key = get_min_encrypt_key(info->key);
@@ -439,21 +443,32 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 #endif
 }
 
-__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_FROM_LXC)
-int tail_handle_ipv4(struct __ctx_buff *ctx)
+static __always_inline int
+tail_handle_ipv4(struct __ctx_buff *ctx, bool from_host)
 {
 	__u32 proxy_identity = ctx_load_meta(ctx, CB_SRC_IDENTITY);
 	int ret;
 
 	ctx_store_meta(ctx, CB_SRC_IDENTITY, 0);
 
-	ret = handle_ipv4(ctx, proxy_identity);
+	ret = handle_ipv4(ctx, proxy_identity, from_host);
 	if (IS_ERR(ret))
 		return send_drop_notify_error(ctx, proxy_identity,
 					      ret, CTX_ACT_DROP, METRIC_INGRESS);
 	return ret;
 }
 
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_FROM_HOST)
+int tail_handle_ipv4_from_host(struct __ctx_buff *ctx)
+{
+	return tail_handle_ipv4(ctx, true);
+}
+
+__section_tail(CILIUM_MAP_CALLS, CILIUM_CALL_IPV4_FROM_LXC)
+int tail_handle_ipv4_from_netdev(struct __ctx_buff *ctx)
+{
+	return tail_handle_ipv4(ctx, false);
+}
 #endif /* ENABLE_IPV4 */
 
 #ifdef ENABLE_IPSEC
@@ -616,7 +631,8 @@ static __always_inline int do_netdev_encrypt(struct __ctx_buff *ctx, __u16 proto
 #endif /* ENCAP_IFINDEX */
 #endif /* ENABLE_IPSEC */
 
-static __always_inline int do_netdev(struct __ctx_buff *ctx, __u16 proto)
+static __always_inline int
+do_netdev(struct __ctx_buff *ctx, __u16 proto, bool from_host)
 {
 	__u32 __maybe_unused identity = 0;
 	int ret;
@@ -630,16 +646,13 @@ static __always_inline int do_netdev(struct __ctx_buff *ctx, __u16 proto)
 	}
 #endif
 	bpf_clear_meta(ctx);
-	bpf_skip_nodeport_clear(ctx);
 
-#ifdef FROM_HOST
-	if (1) {
-
+	if (from_host) {
 #ifdef HOST_REDIRECT_TO_INGRESS
-	if (proto == bpf_htons(ETH_P_ARP)) {
-		union macaddr mac = HOST_IFINDEX_MAC;
-		return arp_respond(ctx, &mac, BPF_F_INGRESS);
-	}
+		if (proto == bpf_htons(ETH_P_ARP)) {
+			union macaddr mac = HOST_IFINDEX_MAC;
+			return arp_respond(ctx, &mac, BPF_F_INGRESS);
+		}
 #endif
 
 		int trace = TRACE_FROM_HOST;
@@ -650,17 +663,20 @@ static __always_inline int do_netdev(struct __ctx_buff *ctx, __u16 proto)
 			trace = TRACE_FROM_PROXY;
 		send_trace_notify(ctx, trace, identity, 0, 0,
 				  ctx->ingress_ifindex, 0, TRACE_PAYLOAD_LEN);
+	} else {
+		bpf_skip_nodeport_clear(ctx);
+		send_trace_notify(ctx, TRACE_FROM_STACK, 0, 0, 0,
+				  ctx->ingress_ifindex, 0, TRACE_PAYLOAD_LEN);
 	}
-#else
-	send_trace_notify(ctx, TRACE_FROM_STACK, 0, 0, 0, ctx->ingress_ifindex,
-			  0, TRACE_PAYLOAD_LEN);
-#endif
 
 	switch (proto) {
 #ifdef ENABLE_IPV6
 	case bpf_htons(ETH_P_IPV6):
 		ctx_store_meta(ctx, CB_SRC_IDENTITY, identity);
-		ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_LXC);
+		if (from_host)
+			ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_HOST);
+		else
+			ep_tail_call(ctx, CILIUM_CALL_IPV6_FROM_LXC);
 		/* See comment below for IPv4. */
 		return send_drop_notify_error(ctx, identity, DROP_MISSED_TAIL_CALL,
 					      CTX_ACT_OK, METRIC_INGRESS);
@@ -668,7 +684,10 @@ static __always_inline int do_netdev(struct __ctx_buff *ctx, __u16 proto)
 #ifdef ENABLE_IPV4
 	case bpf_htons(ETH_P_IP):
 		ctx_store_meta(ctx, CB_SRC_IDENTITY, identity);
-		ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_LXC);
+		if (from_host)
+			ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_HOST);
+		else
+			ep_tail_call(ctx, CILIUM_CALL_IPV4_FROM_LXC);
 		/* We are not returning an error here to always allow traffic to
 		 * the stack in case maps have become unavailable.
 		 *
@@ -685,8 +704,8 @@ static __always_inline int do_netdev(struct __ctx_buff *ctx, __u16 proto)
 	return ret;
 }
 
-__section("from-netdev")
-int from_netdev(struct __ctx_buff *ctx)
+static __always_inline
+int from_netdev_or_host(struct __ctx_buff *ctx, bool from_host)
 {
 	int ret = ret;
 	__u16 proto;
@@ -695,7 +714,19 @@ int from_netdev(struct __ctx_buff *ctx)
 		/* Pass unknown traffic to the stack */
 		return CTX_ACT_OK;
 
-	return do_netdev(ctx, proto);
+	return do_netdev(ctx, proto, from_host);
+}
+
+__section("from-netdev")
+int from_netdev(struct __ctx_buff *ctx)
+{
+	return from_netdev_or_host(ctx, false);
+}
+
+__section("from-host")
+int from_host(struct __ctx_buff *ctx)
+{
+	return from_netdev_or_host(ctx, true);
 }
 
 __section("to-netdev")
