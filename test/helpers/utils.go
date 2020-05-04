@@ -253,13 +253,13 @@ func Fail(description string, callerSkip ...int) {
 		callerSkip = []int{1}
 	}
 
+	if FoobarCallback != nil {
+		fmt.Println("EXECUTING FOOBAR CALLBACK")
+		FoobarCallback()
+		fmt.Println("DONE")
+	}
+
 	if config.CiliumTestConfig.HoldEnvironment {
-		fmt.Println("MAYBE EXECUTING FOOBAR CALLBACK")
-		if FoobarCallback != nil {
-			fmt.Println("EXECUTING FOOBAR CALLBACK")
-			FoobarCallback()
-			fmt.Println("DONE")
-		}
 		HoldEnvironment(description)
 	}
 	ginkgoext.Fail(description, callerSkip...)
