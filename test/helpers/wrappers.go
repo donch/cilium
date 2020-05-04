@@ -69,7 +69,7 @@ func CurlFail(endpoint string, optionalValues ...interface{}) string {
 		endpoint = fmt.Sprintf(endpoint, optionalValues...)
 	}
 	return fmt.Sprintf(
-		`curl --path-as-is -s -D /dev/stderr --fail --connect-timeout %[1]d --max-time %[2]d %[3]s -w "%[4]s"`,
+		`/bin/sh -c "echo \"foobar: \$$\" && exec curl --path-as-is -s -D /dev/stderr --fail --connect-timeout %[1]d --max-time %[2]d %[3]s -w \"%[4]s\""`,
 		CurlConnectTimeout, CurlMaxTimeout, endpoint, statsInfo)
 }
 

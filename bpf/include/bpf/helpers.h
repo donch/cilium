@@ -71,6 +71,8 @@ static void BPF_FUNC(tail_call, void *ctx, void *map, __u32 index);
 /* System helpers */
 static __u32 BPF_FUNC(get_smp_processor_id);
 
+static __u64 BPF_FUNC(get_current_pid_tgid);
+
 /* Routing helpers */
 static int BPF_FUNC(fib_lookup, void *ctx, struct bpf_fib_lookup *params,
 		    __u32 plen, __u32 flags);

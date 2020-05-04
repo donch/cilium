@@ -233,14 +233,14 @@ wildcard_lookup:
 #endif /* ENABLE_NODEPORT */
 }
 
-static __always_inline void cilium_dbg_sock(struct bpf_sock_addr *ctx, __u8 type,
+static __always_inline void cilium_dbg_sock(struct bpf_sock_addr *ctx, __u32 hash, __u8 type,
 				       __u32 arg1, __u32 arg2)
 {
 	struct debug_msg msg = {
 		.type = CILIUM_NOTIFY_DBG_MSG,
 		.subtype = type,
 		.source = EVENT_SOURCE,
-		.hash = 0,
+		.hash = hash,
 		.arg1 = arg1,
 		.arg2 = arg2,
 	};
@@ -252,6 +252,9 @@ static __always_inline int __sock4_xlate(struct bpf_sock_addr *ctx,
 					 struct bpf_sock_addr *ctx_full,
 					 const bool udp_only)
 {
+	__u32 pid = get_current_pid_tgid();
+	cilium_dbg_sock(ctx_full, (__u32)get_socket_cookie(ctx_full),DBG_GENERIC, 666, pid);
+
 	const bool in_hostns = ctx_in_hostns(ctx_full);
 	struct lb4_backend *backend;
 	struct lb4_service *svc;
@@ -280,7 +283,7 @@ static __always_inline int __sock4_xlate(struct bpf_sock_addr *ctx,
 			svc = NULL;
 	}
 	if (svc) {
-		cilium_dbg_sock(ctx_full, DBG_LB4_LOOKUP_MASTER, key.address, key.dport);
+		cilium_dbg_sock(ctx_full, (__u32)get_socket_cookie(ctx_full), DBG_LB4_LOOKUP_MASTER, key.address, key.dport);
 	}
 	if (!svc)
 		return -ENXIO;
