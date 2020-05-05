@@ -17,7 +17,6 @@ package server
 
 import (
 	"fmt"
-	"net"
 
 	observerpb "github.com/cilium/cilium/api/v1/observer"
 	peerpb "github.com/cilium/cilium/api/v1/peer"
@@ -38,9 +37,7 @@ type Server struct {
 
 // NewServer creates a new hubble gRPC server.
 func NewServer(log *logrus.Entry, options ...serveroption.Option) (*Server, error) {
-	opts := serveroption.Options{
-		Listeners: make(map[string]net.Listener),
-	}
+	opts := serveroption.Options{}
 	for _, opt := range options {
 		if err := opt(&opts); err != nil {
 			return nil, fmt.Errorf("failed to apply option: %v", err)
@@ -68,12 +65,23 @@ func (s *Server) initGRPCServer() {
 // listeners. Stop should be called to stop the server.
 func (s *Server) Serve() error {
 	s.initGRPCServer()
-	for name, listener := range s.opts.Listeners {
-		go func(name string, listener net.Listener) {
-			if err := s.srv.Serve(listener); err != nil {
-				s.log.WithError(err).Error("failed to close grpc server")
+	if s.opts.UnixSocketListener != nil {
+		go func() {
+			if err := s.srv.Serve(s.opts.UnixSocketListener); err != nil {
+				s.log.WithError(err).
+					WithField("address", s.opts.UnixSocketListener.Addr().String()).
+					Error("failed to start grpc server")
 			}
-		}(name, listener)
+		}()
+	}
+	if s.opts.TCPListener != nil {
+		go func() {
+			if err := s.srv.Serve(s.opts.TCPListener); err != nil {
+				s.log.WithError(err).
+					WithField("address", s.opts.TCPListener.Addr().String()).
+					Error("failed to start grpc server")
+			}
+		}()
 	}
 	return nil
 }

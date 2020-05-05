@@ -131,7 +131,7 @@ func (d *Daemon) launchHubble() {
 			logger.WithField("address", address).Warn("Hubble server will be exposing its API insecurely on this address")
 		}
 		srv, err := server.NewServer(logger,
-			serveroption.WithListeners([]string{address}),
+			serveroption.WithTCPListener(address),
 			serveroption.WithHealthService(),
 			serveroption.WithObserverService(d.hubbleObserver),
 		)
