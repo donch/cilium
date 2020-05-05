@@ -574,7 +574,7 @@ var _ = Describe("K8sServicesTest", func() {
 
 			// From host via localhost IP
 			// TODO: IPv6
-			count := 100
+			count := 200
 			httpURL = getHTTPLink("127.0.0.1", data.Spec.Ports[0].NodePort)
 			tftpURL = getTFTPLink("127.0.0.1", data.Spec.Ports[1].NodePort)
 			doRequests(httpURL, count, k8s1Name)
@@ -736,84 +736,84 @@ var _ = Describe("K8sServicesTest", func() {
 
 		// fromOutside=true tests session affinity implementation from lb.h, while
 		// fromOutside=false tests from  bpf_sock.c.
-		testSessionAffinity := func(fromOutside bool) {
-			var (
-				data   v1.Service
-				dstPod string
-				count  = 10
-				from   string
-				err    error
-				res    *helpers.CmdRes
-			)
+		//testSessionAffinity := func(fromOutside bool) {
+		//	var (
+		//		data   v1.Service
+		//		dstPod string
+		//		count  = 10
+		//		from   string
+		//		err    error
+		//		res    *helpers.CmdRes
+		//	)
 
-			err = kubectl.Get(helpers.DefaultNamespace, "service test-affinity").Unmarshal(&data)
-			Expect(err).Should(BeNil(), "Cannot retrieve service")
-			_, k8s1IP := kubectl.GetNodeInfo(helpers.K8s1)
+		//	err = kubectl.Get(helpers.DefaultNamespace, "service test-affinity").Unmarshal(&data)
+		//	Expect(err).Should(BeNil(), "Cannot retrieve service")
+		//	_, k8s1IP := kubectl.GetNodeInfo(helpers.K8s1)
 
-			httpURL := getHTTPLink(k8s1IP, data.Spec.Ports[0].NodePort)
-			cmd := helpers.CurlFail(httpURL) + " | grep 'Hostname:' " // pod name is in the hostname
+		//	httpURL := getHTTPLink(k8s1IP, data.Spec.Ports[0].NodePort)
+		//	cmd := helpers.CurlFail(httpURL) + " | grep 'Hostname:' " // pod name is in the hostname
 
-			if fromOutside {
-				from, _ = kubectl.GetNodeInfo(helpers.GetNodeWithoutCilium())
-			} else {
-				pods, err := kubectl.GetPodNames(helpers.DefaultNamespace, testDSClient)
-				ExpectWithOffset(1, err).Should(BeNil(), "cannot retrieve pod names by filter %q", testDSClient)
-				from = pods[0]
-			}
+		//	if fromOutside {
+		//		from, _ = kubectl.GetNodeInfo(helpers.GetNodeWithoutCilium())
+		//	} else {
+		//		pods, err := kubectl.GetPodNames(helpers.DefaultNamespace, testDSClient)
+		//		ExpectWithOffset(1, err).Should(BeNil(), "cannot retrieve pod names by filter %q", testDSClient)
+		//		from = pods[0]
+		//	}
 
-			// Send 10 requests to the test-affinity and check that the same backend is chosen
+		//	// Send 10 requests to the test-affinity and check that the same backend is chosen
 
-			By("Making %d HTTP requests from %s to %q (sessionAffinity)", count, from, httpURL)
+		//	By("Making %d HTTP requests from %s to %q (sessionAffinity)", count, from, httpURL)
 
-			for i := 1; i <= count; i++ {
-				if fromOutside {
-					res, err = kubectl.ExecInHostNetNS(context.TODO(), from, cmd)
-					Expect(err).Should(BeNil(), "Cannot exec in %s host netns", from)
-				} else {
-					res = kubectl.ExecPodCmd(helpers.DefaultNamespace, from, cmd)
-				}
-				ExpectWithOffset(1, res).Should(helpers.CMDSuccess(),
-					"Cannot connect to service %q from %s (%d/%d)", httpURL, from, i, count)
-				pod := strings.TrimSpace(strings.Split(res.GetStdOut(), ": ")[1])
-				if i == 1 {
-					// Retrieve the destination pod from the first request
-					dstPod = pod
-				} else {
-					// Check that destination pod is always the same
-					Expect(dstPod).To(Equal(pod))
-				}
-			}
+		//	for i := 1; i <= count; i++ {
+		//		if fromOutside {
+		//			res, err = kubectl.ExecInHostNetNS(context.TODO(), from, cmd)
+		//			Expect(err).Should(BeNil(), "Cannot exec in %s host netns", from)
+		//		} else {
+		//			res = kubectl.ExecPodCmd(helpers.DefaultNamespace, from, cmd)
+		//		}
+		//		ExpectWithOffset(1, res).Should(helpers.CMDSuccess(),
+		//			"Cannot connect to service %q from %s (%d/%d)", httpURL, from, i, count)
+		//		pod := strings.TrimSpace(strings.Split(res.GetStdOut(), ": ")[1])
+		//		if i == 1 {
+		//			// Retrieve the destination pod from the first request
+		//			dstPod = pod
+		//		} else {
+		//			// Check that destination pod is always the same
+		//			Expect(dstPod).To(Equal(pod))
+		//		}
+		//	}
 
-			// Delete the pod, and check that a new backend is chosen
-			kubectl.DeleteResource("pod", dstPod).ExpectSuccess("Unable to delete %s pod", dstPod)
-			kubectl.WaitPodDeleted(helpers.DefaultNamespace, dstPod)
-			// Unfortunately, it takes a while until cilium-agent receives Endpoint
-			// update event which triggers a removal of the deleted dstPod from
-			// the affinity and the service BPF maps. Therefore, the requests below
-			// are flaky.
-			// TODO(brb) don't sleep, instead wait for Endpoint obj update (might be complicated though)
-			time.Sleep(7 * time.Second)
+		//	// Delete the pod, and check that a new backend is chosen
+		//	kubectl.DeleteResource("pod", dstPod).ExpectSuccess("Unable to delete %s pod", dstPod)
+		//	kubectl.WaitPodDeleted(helpers.DefaultNamespace, dstPod)
+		//	// Unfortunately, it takes a while until cilium-agent receives Endpoint
+		//	// update event which triggers a removal of the deleted dstPod from
+		//	// the affinity and the service BPF maps. Therefore, the requests below
+		//	// are flaky.
+		//	// TODO(brb) don't sleep, instead wait for Endpoint obj update (might be complicated though)
+		//	time.Sleep(7 * time.Second)
 
-			for i := 1; i <= count; i++ {
-				if fromOutside {
-					res, err = kubectl.ExecInHostNetNS(context.TODO(), from, cmd)
-					Expect(err).Should(BeNil(), "Cannot exec in %s host netns", from)
-				} else {
-					res = kubectl.ExecPodCmd(helpers.DefaultNamespace, from, cmd)
-				}
-				ExpectWithOffset(1, res).Should(helpers.CMDSuccess(),
-					"Cannot connect to service %q from %s (%d/%d) after restart", httpURL, from, i, count)
-				pod := strings.TrimSpace(strings.Split(res.GetStdOut(), ": ")[1])
-				if i == 1 {
-					// Retrieve the destination pod from the first request
-					Expect(dstPod).ShouldNot(Equal(pod))
-					dstPod = pod
-				} else {
-					// Check that destination pod is always the same
-					Expect(dstPod).To(Equal(pod))
-				}
-			}
-		}
+		//	for i := 1; i <= count; i++ {
+		//		if fromOutside {
+		//			res, err = kubectl.ExecInHostNetNS(context.TODO(), from, cmd)
+		//			Expect(err).Should(BeNil(), "Cannot exec in %s host netns", from)
+		//		} else {
+		//			res = kubectl.ExecPodCmd(helpers.DefaultNamespace, from, cmd)
+		//		}
+		//		ExpectWithOffset(1, res).Should(helpers.CMDSuccess(),
+		//			"Cannot connect to service %q from %s (%d/%d) after restart", httpURL, from, i, count)
+		//		pod := strings.TrimSpace(strings.Split(res.GetStdOut(), ": ")[1])
+		//		if i == 1 {
+		//			// Retrieve the destination pod from the first request
+		//			Expect(dstPod).ShouldNot(Equal(pod))
+		//			dstPod = pod
+		//		} else {
+		//			// Check that destination pod is always the same
+		//			Expect(dstPod).To(Equal(pod))
+		//		}
+		//	}
+		//}
 
 		testExternalTrafficPolicyLocal := func() {
 			var (
@@ -1033,10 +1033,10 @@ var _ = Describe("K8sServicesTest", func() {
 						testExternalTrafficPolicyLocal()
 					})
 
-					It("Tests NodePort with sessionAffinity", func() {
-						testSessionAffinity(false)
-						testSessionAffinity(true)
-					})
+					//It("Tests NodePort with sessionAffinity", func() {
+					//	testSessionAffinity(false)
+					//	testSessionAffinity(true)
+					//})
 
 					It("Tests HealthCheckNodePort", func() {
 						testHealthCheckNodePort()
@@ -1063,10 +1063,10 @@ var _ = Describe("K8sServicesTest", func() {
 						testExternalTrafficPolicyLocal()
 					})
 
-					It("Tests NodePort with sessionAffinity", func() {
-						testSessionAffinity(false)
-						testSessionAffinity(true)
-					})
+					//It("Tests NodePort with sessionAffinity", func() {
+					//	testSessionAffinity(false)
+					//	testSessionAffinity(true)
+					//})
 
 					It("Tests HealthCheckNodePort", func() {
 						testHealthCheckNodePort()

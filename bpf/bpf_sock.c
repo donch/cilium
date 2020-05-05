@@ -252,8 +252,6 @@ static __always_inline int __sock4_xlate(struct bpf_sock_addr *ctx,
 					 struct bpf_sock_addr *ctx_full,
 					 const bool udp_only)
 {
-	__u32 pid = get_current_pid_tgid();
-	cilium_dbg_sock(ctx_full, (__u32)get_socket_cookie(ctx_full),DBG_GENERIC, 666, pid);
 
 	const bool in_hostns = ctx_in_hostns(ctx_full);
 	struct lb4_backend *backend;
@@ -262,6 +260,9 @@ static __always_inline int __sock4_xlate(struct bpf_sock_addr *ctx,
 		.address	= ctx->user_ip4,
 		.dport		= ctx_dst_port(ctx),
 	};
+	__u32 pid = get_current_pid_tgid();
+	cilium_dbg_sock(ctx_full, (__u32)get_socket_cookie(ctx_full),DBG_GENERIC, 666, pid);
+	cilium_dbg_sock(ctx_full, (__u32)get_socket_cookie(ctx_full),DBG_GENERIC, key.address, key.dport);
 	struct lb4_service *slave_svc;
 	__u32 backend_id = 0;
 	/* Indicates whether a backend was selected from session affinity */
