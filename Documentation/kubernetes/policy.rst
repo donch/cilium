@@ -31,7 +31,13 @@ with Kubernetes:
 
 It is recommended to only use one of the above policy types at a time to
 minimize unintended effects arising from the interaction between the
-policies.
+policies (there is no technical reason behind this recommendation, more 
+an organizational issue of managing unexpected combination of policy rules, when 
+policies of different types are applied. If you are understand difference 
+between those different policy types and managing policy rules accordingly 
+and have tools in place, like hubble, to troubleshoot unintended drops).
+
+
 
 .. _NetworkPolicy:
 .. _networkpolicy_state:
