@@ -184,8 +184,11 @@ var _ = BeforeAll(func() {
 		return
 	}
 
-	if progressChan := goReportVagrantStatus(); progressChan != nil {
-		defer func() { progressChan <- err == nil }()
+	if config.CiliumTestConfig.Kubeconfig == "" {
+		// This means that the test is using Vagrant. Report its status.
+		if progressChan := goReportVagrantStatus(); progressChan != nil {
+			defer func() { progressChan <- err == nil }()
+		}
 	}
 
 	switch scope {
